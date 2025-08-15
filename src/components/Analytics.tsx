@@ -249,7 +249,7 @@ export const Analytics = () => {
       {analytics && (
         <>
           {/* Summary Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
             <Card className="bg-gradient-card shadow-medium">
               <CardContent className="p-6">
                 <div className="flex items-center justify-between">
@@ -266,7 +266,8 @@ export const Analytics = () => {
               <CardContent className="p-6">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-muted-foreground">Passed Exams</p>
+                    <p className="text-sm font-medium text-muted-foreground">Total Exams Passed</p>
+                    <p className="text-xs text-muted-foreground mb-1">All individual course passes</p>
                     <p className="text-2xl font-bold text-success">{analytics.totalPassed}</p>
                   </div>
                   <TrendingUp className="h-8 w-8 text-success" />
@@ -278,7 +279,8 @@ export const Analytics = () => {
               <CardContent className="p-6">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-muted-foreground">Failed Exams</p>
+                    <p className="text-sm font-medium text-muted-foreground">Total Exams Failed</p>
+                    <p className="text-xs text-muted-foreground mb-1">All individual course failures</p>
                     <p className="text-2xl font-bold text-destructive">{analytics.totalFailed}</p>
                   </div>
                   <TrendingDown className="h-8 w-8 text-destructive" />
@@ -290,7 +292,21 @@ export const Analytics = () => {
               <CardContent className="p-6">
                 <div className="flex items-center justify-between">
                   <div>
+                    <p className="text-sm font-medium text-muted-foreground">Total Exams</p>
+                    <p className="text-xs text-muted-foreground mb-1">All exam attempts</p>
+                    <p className="text-2xl font-bold text-info">{analytics.totalPassed + analytics.totalFailed}</p>
+                  </div>
+                  <GraduationCap className="h-8 w-8 text-info" />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-gradient-card shadow-medium">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
                     <p className="text-sm font-medium text-muted-foreground">Overall Pass Rate</p>
+                    <p className="text-xs text-muted-foreground mb-1">Percentage of all exams</p>
                     <p className="text-2xl font-bold text-primary">
                       {Math.round((analytics.totalPassed / (analytics.totalPassed + analytics.totalFailed)) * 100) || 0}%
                     </p>

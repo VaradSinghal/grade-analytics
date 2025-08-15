@@ -7,8 +7,6 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
     PostgrestVersion: "13.0.4"
   }
@@ -18,18 +16,21 @@ export type Database = {
         Row: {
           code: string
           created_at: string
+          credits: number | null
           id: string
           name: string
         }
         Insert: {
           code: string
           created_at?: string
+          credits?: number | null
           id?: string
           name: string
         }
         Update: {
           code?: string
           created_at?: string
+          credits?: number | null
           id?: string
           name?: string
         }
@@ -42,6 +43,7 @@ export type Database = {
           grade: string
           id: string
           is_passed: boolean
+          mode_of_attempt: string | null
           student_id: string
           updated_at: string
         }
@@ -51,6 +53,7 @@ export type Database = {
           grade: string
           id?: string
           is_passed?: boolean
+          mode_of_attempt?: string | null
           student_id: string
           updated_at?: string
         }
@@ -60,6 +63,7 @@ export type Database = {
           grade?: string
           id?: string
           is_passed?: boolean
+          mode_of_attempt?: string | null
           student_id?: string
           updated_at?: string
         }
@@ -83,30 +87,39 @@ export type Database = {
       students: {
         Row: {
           batch: string
+          branch_of_study: string | null
           created_at: string
           degree: string
+          graduation_type: string | null
           id: string
           name: string
+          office_name: string | null
           register_number: string
           semester: number
           updated_at: string
         }
         Insert: {
           batch: string
+          branch_of_study?: string | null
           created_at?: string
           degree: string
+          graduation_type?: string | null
           id?: string
           name: string
+          office_name?: string | null
           register_number: string
           semester: number
           updated_at?: string
         }
         Update: {
           batch?: string
+          branch_of_study?: string | null
           created_at?: string
           degree?: string
+          graduation_type?: string | null
           id?: string
           name?: string
+          office_name?: string | null
           register_number?: string
           semester?: number
           updated_at?: string

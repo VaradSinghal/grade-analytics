@@ -1,190 +1,271 @@
 import React, { useCallback, useState } from 'react';
 import { Upload, FileSpreadsheet, CheckCircle, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Progress } from '@/components/ui/progress';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/integrations/supabase/client';
 
 interface StudentRecord {
-  register_number: string;
-  name: string;
-  semester: number;
-  batch: string;
-  degree: string;
-  [courseCode: string]: any;
+  'S.No': number;
+  'Office Name': string;
+  'Register No': string;
+  'Student Name': string;
+  'Semester': number;
+  'Batch': string;
+  'Degree': string;
+  'Branch of Study': string;
+  'Graduation Type': string;
+  'Course Code': string;
+  'Course Title': string;
+  'Credits': number;
+  'Grade': string;
+  'Mode Of Attempt': string;
 }
 
 export const FileUpload = () => {
   const [uploading, setUploading] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [uploadStatus, setUploadStatus] = useState<string>('');
+  const [progress, setProgress] = useState(0);
   const { toast } = useToast();
 
   const processExcelData = useCallback(async (file: File) => {
     try {
       setUploading(true);
-      setUploadStatus('idle');
+      setProgress(0);
+      setUploadStatus('Reading Excel file...');
 
-      const arrayBuffer = await file.arrayBuffer();
-      const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-      const sheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[sheetName];
+      const data = await file.arrayBuffer();
+      setProgress(10);
       
+      const workbook = XLSX.read(data);
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+      const jsonData = XLSX.utils.sheet_to_json(worksheet) as StudentRecord[];
 
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
-      
       if (jsonData.length === 0) {
-        throw new Error('No data found in the Excel file');
+        throw new Error('Excel file is empty');
       }
 
-      const headers = jsonData[0];
-      console.log('Excel headers:', headers);
+      setProgress(20);
+      setUploadStatus(`Processing ${jsonData.length} records...`);
 
-     
-      const records = jsonData.slice(1).map(row => {
-        const record: any = {};
-        headers.forEach((header: string, index: number) => {
-          record[header] = row[index];
-        });
-        return record;
-      });
-
-      console.log('Sample record:', records[0]);
-
-      const { data: courses } = await supabase
-        .from('courses')
-        .select('id, code, name');
-
-      const courseMap = new Map(courses?.map(c => [c.code, c.id]) || []);
-      console.log('Available course codes:', Array.from(courseMap.keys()));
-
+      // Get unique course information from the data
+      const courseMap = new Map<string, { title: string; credits: number }>();
       
-      const courseColumns = headers.filter((header: string) => {
-        if (!header) return false;
- 
-        const courseCode = header.split(' - ')[0].trim();
-        const hasCourseCode = courseMap.has(courseCode);
-        if (hasCourseCode) {
-          console.log('Found course column:', header, '-> Course code:', courseCode);
+      jsonData.forEach(record => {
+        if (record['Course Code'] && record['Course Title'] && record['Credits']) {
+          courseMap.set(record['Course Code'], {
+            title: record['Course Title'],
+            credits: record['Credits']
+          });
         }
-        return hasCourseCode;
       });
 
-      console.log('Course columns found:', courseColumns);
+      // Verify courses exist in database and insert new ones
+      setProgress(30);
+      setUploadStatus('Validating courses...');
+      
+      const courseCodes = Array.from(courseMap.keys());
+      const { data: existingCourses, error: coursesError } = await supabase
+        .from('courses')
+        .select('code')
+        .in('code', courseCodes);
 
-      let gradesProcessed = 0;
+      if (coursesError) {
+        throw new Error(`Error checking courses: ${coursesError.message}`);
+      }
 
-      for (const record of records) {
+      const existingCourseCodes = new Set(existingCourses?.map(c => c.code) || []);
+      const newCourses = courseCodes.filter(code => !existingCourseCodes.has(code));
 
-        if (!record.register_number && !record.name) continue;
+      // Insert new courses
+      if (newCourses.length > 0) {
+        setUploadStatus(`Creating ${newCourses.length} new courses...`);
+        const coursesToInsert = newCourses.map(code => {
+          const courseInfo = courseMap.get(code)!;
+          return {
+            code,
+            name: courseInfo.title,
+            credits: courseInfo.credits
+          };
+        });
 
-        const registerNumber = String(record.register_number || '').trim();
-        const name = String(record.name || '').trim();
-        const semester = Number(record.semester) || 0;
-        const batch = String(record.batch || '').trim();
-        const degree = String(record.degree || '').trim();
+        const { error: insertCoursesError } = await supabase
+          .from('courses')
+          .insert(coursesToInsert);
 
-        
-        if (!registerNumber || !name) {
-          console.log('Skipping row - missing data:', { registerNumber, name, record });
-          continue;
-        }
-
-        console.log('Processing student:', registerNumber, name);
-
-        const { data: student, error: studentError } = await supabase
-          .from('students')
-          .upsert({
-            register_number: registerNumber,
-            name: name,
-            semester: semester,
-            batch: batch,
-            degree: degree,
-          }, {
-            onConflict: 'register_number'
-          })
-          .select()
-          .single();
-
-        if (studentError) {
-          console.error('Error inserting student:', studentError);
-          continue;
-        }
-
-   
-        for (const courseColumn of courseColumns) {
-          const gradeValue = record[courseColumn];
-          
-          if (!gradeValue || gradeValue === '' || gradeValue === null || gradeValue === undefined) {
-            continue;
-          }
-
-    
-          const courseCode = courseColumn.split(' - ')[0].trim();
-          const courseId = courseMap.get(courseCode);
-
-          if (courseId) {
-            const grade = String(gradeValue).trim();
-            
-
-            const passingGrades = ['O', 'A+', 'A', 'B+', 'B', 'C+', 'C'];
-            const failingGrades = ['D', 'F', 'Fail', 'FAIL', 'fail', 'U', 'RA', 'Ab', 'AB', 'ab', 'Absent', 'ABSENT', 'W', 'I','Wh','WH'];
-
-            let isPassed = false;
-            if (passingGrades.includes(grade)) {
-              isPassed = true;
-            } else if (failingGrades.includes(grade)) {
-              isPassed = false;
-            } else {
-          
-              isPassed = !failingGrades.some(fail => grade.toLowerCase().includes(fail.toLowerCase()));
-            }
-
-            console.log(`Inserting grade: Student=${student.register_number}, Course=${courseCode}, Grade=${grade}, Passed=${isPassed}`);
-
-            const { data: gradeData, error: gradeError } = await supabase
-              .from('grades')
-              .upsert({
-                student_id: student.id,
-                course_id: courseId,
-                grade: grade,
-                is_passed: isPassed,
-              }, {
-                onConflict: 'student_id,course_id'
-              })
-              .select();
-
-            if (gradeError) {
-              console.error('Error inserting grade:', gradeError, {
-                student_id: student.id,
-                course_id: courseId,
-                grade: grade
-              });
-            } else {
-              gradesProcessed++;
-            }
-          }
+        if (insertCoursesError) {
+          throw new Error(`Error inserting courses: ${insertCoursesError.message}`);
         }
       }
 
-      setUploadStatus('success');
+      setProgress(40);
+      setUploadStatus('Processing student data...');
+
+      // Process students with new fields
+      const studentsToUpsert = jsonData.map(record => ({
+        register_number: record['Register No'],
+        name: record['Student Name'],
+        semester: record['Semester'],
+        batch: record['Batch'],
+        degree: record['Degree'],
+        office_name: record['Office Name'],
+        branch_of_study: record['Branch of Study'],
+        graduation_type: record['Graduation Type']
+      }));
+
+      // Remove duplicates based on register_number
+      const uniqueStudents = studentsToUpsert.reduce((acc, student) => {
+        if (!acc.find(s => s.register_number === student.register_number)) {
+          acc.push(student);
+        }
+        return acc;
+      }, [] as typeof studentsToUpsert);
+
+      // Upsert students
+      setProgress(50);
+      setUploadStatus(`Upserting ${uniqueStudents.length} students...`);
+      
+      const { error: studentsError } = await supabase
+        .from('students')
+        .upsert(uniqueStudents, {
+          onConflict: 'register_number'
+        });
+
+      if (studentsError) {
+        throw new Error(`Error upserting students: ${studentsError.message}`);
+      }
+
+      // Get student IDs in batches to avoid URL length limits
+      setProgress(60);
+      setUploadStatus('Mapping student IDs...');
+      
+      const studentIdMap = new Map<string, string>();
+      const batchSize = 100; // Process 100 students at a time
+      
+      for (let i = 0; i < uniqueStudents.length; i += batchSize) {
+        const batch = uniqueStudents.slice(i, i + batchSize);
+        const registerNumbers = batch.map(s => s.register_number);
+        
+        const { data: students, error: getStudentsError } = await supabase
+          .from('students')
+          .select('id, register_number')
+          .in('register_number', registerNumbers);
+
+        if (getStudentsError) {
+          throw new Error(`Error getting students batch ${Math.floor(i/batchSize) + 1}: ${getStudentsError.message}`);
+        }
+
+        // Add to map
+        students?.forEach(s => studentIdMap.set(s.register_number, s.id));
+        
+        // Update progress
+        const batchProgress = 60 + (i / uniqueStudents.length) * 5;
+        setProgress(batchProgress);
+        setUploadStatus(`Mapping student IDs... ${Math.min(i + batchSize, uniqueStudents.length)}/${uniqueStudents.length}`);
+      }
+
+      // Get course IDs
+      setProgress(65);
+      setUploadStatus('Mapping course IDs...');
+      
+      const { data: courses, error: getCoursesError } = await supabase
+        .from('courses')
+        .select('id, code')
+        .in('code', courseCodes);
+
+      if (getCoursesError) {
+        throw new Error(`Error getting courses: ${getCoursesError.message}`);
+      }
+
+      const courseIdMap = new Map(courses?.map(c => [c.code, c.id]) || []);
+
+      // Process grades with mode of attempt
+      setProgress(70);
+      setUploadStatus('Processing grades...');
+      
+      const gradesToUpsert: any[] = [];
+      let processedCount = 0;
+
+      jsonData.forEach((record, index) => {
+        // Update progress every 100 records
+        if (index % 100 === 0) {
+          const gradeProgress = 70 + (index / jsonData.length) * 20;
+          setProgress(gradeProgress);
+          setUploadStatus(`Processing grades... ${index}/${jsonData.length}`);
+        }
+        const studentId = studentIdMap.get(record['Register No']);
+        const courseId = courseIdMap.get(record['Course Code']);
+        
+        if (studentId && courseId && record['Grade']) {
+          const grade = record['Grade'].toString().trim();
+          if (grade !== '') {
+            // Determine if student passed (not F, Ab, or similar failing grades)
+            const isPassed = !['F', 'AB', 'Ab', 'ab', 'WH', 'Wh', 'wh'].includes(grade.toUpperCase());
+            
+            gradesToUpsert.push({
+              student_id: studentId,
+              course_id: courseId,
+              grade: grade,
+              is_passed: isPassed,
+              mode_of_attempt: record['Mode Of Attempt'] || 'Regular'
+            });
+          }
+        }
+      });
+
+      // Upsert grades in batches to avoid timeouts
+      if (gradesToUpsert.length > 0) {
+        setProgress(90);
+        setUploadStatus(`Saving ${gradesToUpsert.length} grades...`);
+        
+        const gradeBatchSize = 500; // Process 500 grades at a time
+        for (let i = 0; i < gradesToUpsert.length; i += gradeBatchSize) {
+          const batch = gradesToUpsert.slice(i, i + gradeBatchSize);
+          
+          const { error: gradesError } = await supabase
+            .from('grades')
+            .upsert(batch, {
+              onConflict: 'student_id,course_id'
+            });
+
+          if (gradesError) {
+            throw new Error(`Error upserting grades batch ${Math.floor(i/gradeBatchSize) + 1}: ${gradesError.message}`);
+          }
+          
+          // Update progress
+          const gradeProgress = 90 + (i / gradesToUpsert.length) * 10;
+          setProgress(gradeProgress);
+          setUploadStatus(`Saving grades... ${Math.min(i + gradeBatchSize, gradesToUpsert.length)}/${gradesToUpsert.length}`);
+        }
+      }
+
+      setProgress(100);
+      setUploadStatus(`Successfully processed ${uniqueStudents.length} students and ${gradesToUpsert.length} grades`);
+      
       toast({
         title: "Upload Successful",
-        description: `Successfully processed ${records.length} student records and ${gradesProcessed} grades.`,
+        description: `Successfully processed ${uniqueStudents.length} students and ${gradesToUpsert.length} grades.`,
       });
 
-      console.log(`Total grades processed: ${gradesProcessed}`);
+      // Auto-hide success message after 3 seconds
+      setTimeout(() => {
+        setUploadStatus('');
+        setUploading(false);
+        setProgress(0);
+      }, 3000);
 
     } catch (error) {
-      console.error('Error processing file:', error);
-      setUploadStatus('error');
+      console.error('Error processing Excel file:', error);
+      setUploadStatus(`Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`);
       toast({
         title: "Upload Failed",
         description: error instanceof Error ? error.message : "An error occurred while processing the file.",
         variant: "destructive",
       });
-    } finally {
       setUploading(false);
+      setProgress(0);
     }
   }, [toast]);
 
@@ -230,21 +311,31 @@ export const FileUpload = () => {
             onDragOver={handleDragOver}
           >
             <div className="flex flex-col items-center gap-4">
-              {uploadStatus === 'success' ? (
+              {uploadStatus.includes('Successfully') ? (
                 <CheckCircle className="h-12 w-12 text-success" />
-              ) : uploadStatus === 'error' ? (
+              ) : uploadStatus.includes('Error') ? (
                 <AlertCircle className="h-12 w-12 text-destructive" />
               ) : (
                 <Upload className={`h-12 w-12 ${uploading ? 'text-primary animate-pulse' : 'text-muted-foreground'}`} />
               )}
               
-              <div>
+              <div className="w-full">
                 <h3 className="text-lg font-semibold mb-2">
-                  {uploading ? 'Processing...' : 'Drop your Excel file here'}
+                  {uploading ? uploadStatus || 'Processing...' : 'Drop your Excel file here'}
                 </h3>
                 <p className="text-muted-foreground mb-4">
                   or click to browse and select your file
                 </p>
+                
+                {uploading && (
+                  <div className="w-full mb-4">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm text-muted-foreground">Progress</span>
+                      <span className="text-sm font-medium">{Math.round(progress)}%</span>
+                    </div>
+                    <Progress value={progress} className="w-full h-2" />
+                  </div>
+                )}
                 
                 <input
                   type="file"
@@ -269,13 +360,22 @@ export const FileUpload = () => {
           </div>
 
           <div className="bg-muted/50 rounded-lg p-4">
-            <h4 className="font-semibold mb-2 text-foreground">File Requirements:</h4>
+            <h4 className="font-semibold mb-2 text-foreground">Required Excel Columns:</h4>
             <ul className="text-sm text-muted-foreground space-y-1">
-              <li>• Excel file (.xlsx or .xls format)</li>
-              <li>• Contains columns: register_number, name, semester, batch, degree</li>
-              <li>• Course grades in columns with course codes (e.g., 21CSC101T - CourseName)</li>
-              <li>• Can handle thousands of student records</li>
-              <li>• Wait for the file to be processed</li>
+              <li>• S.No</li>
+              <li>• Office Name</li>
+              <li>• Register No</li>
+              <li>• Student Name</li>
+              <li>• Semester</li>
+              <li>• Batch</li>
+              <li>• Degree</li>
+              <li>• Branch of Study</li>
+              <li>• Graduation Type</li>
+              <li>• Course Code</li>
+              <li>• Course Title</li>
+              <li>• Credits</li>
+              <li>• Grade</li>
+              <li>• Mode Of Attempt</li>
             </ul>
           </div>
         </CardContent>

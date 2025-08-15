@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { CheckCircle, XCircle, Users, BookOpen, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { supabase } from '@/integrations/supabase/client';
 import { useNavigate } from 'react-router-dom';
 
@@ -12,19 +13,22 @@ interface Course {
   id: string;
   code: string;
   name: string;
+  credits?: number;
 }
 
 interface StudentGrade {
-  student: {
-    id: string;
-    register_number: string;
-    name: string;
-    semester: number;
-    batch: string;
-    degree: string;
-  };
+  id: string;
+  register_number: string;
+  name: string;
+  semester: number;
+  batch: string;
+  degree: string;
+  office_name?: string;
+  branch_of_study?: string;
+  graduation_type?: string;
   grade: string;
   is_passed: boolean;
+  mode_of_attempt?: string;
 }
 
 export const CourseDetails = () => {
@@ -67,31 +71,56 @@ export const CourseDetails = () => {
 
     try {
       setLoadingStudents(true);
-      const { data: gradesData } = await supabase
+      
+      // Get all grades for the selected course
+      const { data: gradesData, error: gradesError } = await supabase
         .from('grades')
         .select(`
+          student_id,
           grade,
           is_passed,
-          students!inner(
-            id,
-            register_number,
-            name,
-            semester,
-            batch,
-            degree
-          )
+          mode_of_attempt
         `)
-        .eq('course_id', selectedCourse)
-        .order('students(name)');
+        .eq('course_id', selectedCourse);
 
-      if (gradesData) {
-        const formattedData = gradesData.map((item: any) => ({
-          student: item.students,
-          grade: item.grade,
-          is_passed: item.is_passed
-        }));
-        setStudentGrades(formattedData);
+      if (gradesError) {
+        throw gradesError;
       }
+
+      const studentIds = gradesData?.map(g => g.student_id) || [];
+
+      // Get student information
+      const { data: studentsData, error: studentsError } = await supabase
+        .from('students')
+        .select(`
+          id,
+          register_number,
+          name,
+          semester,
+          batch,
+          degree,
+          office_name,
+          branch_of_study,
+          graduation_type
+        `)
+        .in('id', studentIds);
+
+      if (studentsError) {
+        throw studentsError;
+      }
+
+      // Combine student and grade data
+      const combinedData: StudentGrade[] = studentsData?.map(student => {
+        const grade = gradesData?.find(g => g.student_id === student.id);
+        return {
+          ...student,
+          grade: grade?.grade || '',
+          is_passed: grade?.is_passed || false,
+          mode_of_attempt: grade?.mode_of_attempt || 'Regular'
+        };
+      }) || [];
+
+      setStudentGrades(combinedData.sort((a, b) => a.name.localeCompare(b.name)));
     } catch (error) {
       console.error('Error loading student grades:', error);
     } finally {
@@ -103,6 +132,8 @@ export const CourseDetails = () => {
   const passedCount = studentGrades.filter(sg => sg.is_passed).length;
   const failedCount = studentGrades.length - passedCount;
   const passRate = studentGrades.length > 0 ? Math.round((passedCount / studentGrades.length) * 100) : 0;
+  const arrearCount = studentGrades.filter(sg => sg.mode_of_attempt === 'Arrear').length;
+  const regularCount = studentGrades.length - arrearCount;
 
   if (loading) {
     return (
@@ -152,7 +183,7 @@ export const CourseDetails = () => {
               <SelectContent>
                 {courses.map(course => (
                   <SelectItem key={course.id} value={course.id}>
-                    {course.code} - {course.name}
+                    {course.code} - {course.name} {course.credits && `(${course.credits} credits)`}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -164,7 +195,7 @@ export const CourseDetails = () => {
       {/* Course Statistics */}
       {selectedCourse && selectedCourseInfo && (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-6 mb-8">
             <Card className="bg-gradient-card shadow-medium">
               <CardContent className="p-6">
                 <div className="flex items-center justify-between">
@@ -212,13 +243,40 @@ export const CourseDetails = () => {
                 </div>
               </CardContent>
             </Card>
+
+            <Card className="bg-gradient-card shadow-medium">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-muted-foreground">Regular</p>
+                    <p className="text-2xl font-bold text-info">{regularCount}</p>
+                  </div>
+                  <Users className="h-8 w-8 text-info" />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-gradient-card shadow-medium">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-muted-foreground">Arrear</p>
+                    <p className="text-2xl font-bold text-warning">{arrearCount}</p>
+                  </div>
+                  <Users className="h-8 w-8 text-warning" />
+                </div>
+              </CardContent>
+            </Card>
           </div>
 
-          {/* Students List */}
+          {/* Students Table */}
           <Card className="bg-gradient-card shadow-medium">
             <CardHeader>
               <CardTitle>Students in {selectedCourseInfo.code}</CardTitle>
-              <CardDescription>{selectedCourseInfo.name}</CardDescription>
+              <CardDescription>
+                {selectedCourseInfo.name} 
+                {selectedCourseInfo.credits && ` - ${selectedCourseInfo.credits} Credits`}
+              </CardDescription>
             </CardHeader>
             <CardContent>
               {loadingStudents ? (
@@ -228,53 +286,44 @@ export const CourseDetails = () => {
                 </div>
               ) : studentGrades.length > 0 ? (
                 <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b">
-                        <th className="text-left p-3">Register Number</th>
-                        <th className="text-left p-3">Student Name</th>
-                        <th className="text-center p-3">Semester</th>
-                        <th className="text-center p-3">Batch</th>
-                        <th className="text-center p-3">Degree</th>
-                        <th className="text-center p-3">Grade</th>
-                        <th className="text-center p-3">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {studentGrades.map((studentGrade, index) => (
-                        <tr key={index} className="border-b hover:bg-muted/50">
-                          <td className="p-3 font-medium">{studentGrade.student.register_number}</td>
-                          <td className="p-3">{studentGrade.student.name}</td>
-                          <td className="p-3 text-center">{studentGrade.student.semester}</td>
-                          <td className="p-3 text-center">{studentGrade.student.batch}</td>
-                          <td className="p-3 text-center">{studentGrade.student.degree}</td>
-                          <td className="p-3 text-center">
-                            <Badge 
-                              variant={studentGrade.is_passed ? "default" : "destructive"}
-                              className="font-medium"
-                            >
-                              {studentGrade.grade}
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Register No</TableHead>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Semester</TableHead>
+                        <TableHead>Batch</TableHead>
+                        <TableHead>Degree</TableHead>
+                        <TableHead>Branch</TableHead>
+                        <TableHead>Grade</TableHead>
+                        <TableHead>Mode</TableHead>
+                        <TableHead>Status</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {studentGrades.map((student, index) => (
+                        <TableRow key={index}>
+                          <TableCell>{student.register_number}</TableCell>
+                          <TableCell>{student.name}</TableCell>
+                          <TableCell>{student.semester}</TableCell>
+                          <TableCell>{student.batch}</TableCell>
+                          <TableCell>{student.degree}</TableCell>
+                          <TableCell>{student.branch_of_study}</TableCell>
+                          <TableCell>{student.grade}</TableCell>
+                          <TableCell>
+                            <Badge variant={student.mode_of_attempt === 'Arrear' ? "secondary" : "outline"}>
+                              {student.mode_of_attempt || 'Regular'}
                             </Badge>
-                          </td>
-                          <td className="p-3 text-center">
-                            <div className="flex items-center justify-center">
-                              {studentGrade.is_passed ? (
-                                <div className="flex items-center gap-1 text-success">
-                                  <CheckCircle className="h-4 w-4" />
-                                  <span className="text-xs font-medium">Pass</span>
-                                </div>
-                              ) : (
-                                <div className="flex items-center gap-1 text-destructive">
-                                  <XCircle className="h-4 w-4" />
-                                  <span className="text-xs font-medium">Fail</span>
-                                </div>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={student.is_passed ? "default" : "destructive"}>
+                              {student.is_passed ? "Pass" : "Fail"}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
                       ))}
-                    </tbody>
-                  </table>
+                    </TableBody>
+                  </Table>
                 </div>
               ) : (
                 <div className="text-center py-8">
