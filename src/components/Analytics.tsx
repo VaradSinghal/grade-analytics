@@ -33,6 +33,14 @@ interface AnalyticsData {
     total: number;
     passRate: number;
   }>;
+  semesterStats: Array<{
+    semester: number;
+    totalStudents: number;
+    passed: number;
+    failed: number;
+    total: number;
+    passRate: number;
+  }>;
 }
 
 export const Analytics = () => {
@@ -129,6 +137,41 @@ export const Analytics = () => {
           passRate: Math.round((stats.passed / stats.total) * 100)
         })).sort((a, b) => b.passRate - a.passRate);
 
+        // Calculate semester-wise statistics
+        const semesterStatsMap = new Map();
+        
+        gradesData.forEach((grade: any) => {
+          const semester = grade.students.semester;
+          
+          if (!semesterStatsMap.has(semester)) {
+            semesterStatsMap.set(semester, { 
+              totalStudents: new Set(),
+              passed: 0, 
+              failed: 0, 
+              total: 0 
+            });
+          }
+          
+          const stats = semesterStatsMap.get(semester);
+          stats.totalStudents.add(grade.students.id);
+          stats.total++;
+          
+          if (grade.is_passed) {
+            stats.passed++;
+          } else {
+            stats.failed++;
+          }
+        });
+
+        const semesterStats = Array.from(semesterStatsMap.entries()).map(([semester, stats]) => ({
+          semester,
+          totalStudents: stats.totalStudents.size,
+          passed: stats.passed,
+          failed: stats.failed,
+          total: stats.total,
+          passRate: Math.round((stats.passed / stats.total) * 100)
+        })).sort((a, b) => a.semester - b.semester);
+
         // Get total students count from students table (not filtered by grades)
         let totalStudentsQuery = supabase.from('students').select('id', { count: 'exact', head: true });
         
@@ -149,7 +192,8 @@ export const Analytics = () => {
           totalStudents: totalStudentsCount || 0,
           totalPassed,
           totalFailed,
-          courseStats
+          courseStats,
+          semesterStats
         });
       }
     } catch (error) {
@@ -387,6 +431,82 @@ export const Analytics = () => {
               </CardContent>
             </Card>
           </div>
+
+          {/* Semester-wise Comparison */}
+          {analytics.semesterStats.length > 0 && (
+            <div className="mt-8">
+              <Card className="bg-gradient-card shadow-medium">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <GraduationCap className="h-5 w-5 text-primary" />
+                    Semester-wise Performance Comparison
+                  </CardTitle>
+                  <CardDescription>Compare performance across different semesters</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    {/* Semester Comparison Bar Chart */}
+                    <div>
+                      <h4 className="text-lg font-semibold mb-4">Pass/Fail Rate by Semester</h4>
+                      <ResponsiveContainer width="100%" height={300}>
+                        <BarChart data={analytics.semesterStats}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis 
+                            dataKey="semester" 
+                            tickFormatter={(value) => `Sem ${value}`}
+                          />
+                          <YAxis />
+                          <Tooltip 
+                            labelFormatter={(value) => `Semester ${value}`}
+                            formatter={(value, name) => [value, name === 'passed' ? 'Passed' : 'Failed']}
+                          />
+                          <Bar dataKey="passed" stackId="a" fill="#10b981" name="Passed" />
+                          <Bar dataKey="failed" stackId="a" fill="#ef4444" name="Failed" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+
+                    {/* Semester Summary Cards */}
+                    <div>
+                      <h4 className="text-lg font-semibold mb-4">Semester Statistics</h4>
+                      <div className="space-y-4">
+                        {analytics.semesterStats.map((semester) => (
+                          <Card key={semester.semester} className="p-4">
+                            <div className="flex justify-between items-center">
+                              <div>
+                                <h5 className="font-semibold">Semester {semester.semester}</h5>
+                                <p className="text-sm text-muted-foreground">
+                                  {semester.totalStudents} students • {semester.total} exams
+                                </p>
+                              </div>
+                              <div className="text-right">
+                                <div className={`text-lg font-bold ${
+                                  semester.passRate >= 80 ? 'text-success' :
+                                  semester.passRate >= 60 ? 'text-warning' :
+                                  'text-destructive'
+                                }`}>
+                                  {semester.passRate}%
+                                </div>
+                                <p className="text-xs text-muted-foreground">Pass Rate</p>
+                              </div>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 gap-4 text-sm">
+                              <div>
+                                <span className="text-success">✓ {semester.passed} Passed</span>
+                              </div>
+                              <div>
+                                <span className="text-destructive">✗ {semester.failed} Failed</span>
+                              </div>
+                            </div>
+                          </Card>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
 
           {/* Course Performance Table */}
           {analytics.courseStats.length > 0 && (
