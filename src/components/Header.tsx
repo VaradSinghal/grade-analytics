@@ -55,7 +55,14 @@ export const Header = ({ currentView, onViewChange }: HeaderProps) => {
                 <span className="text-sm text-muted-foreground hidden md:inline-flex items-center gap-1">
                   <User className="h-4 w-4" /> {userEmail}
                 </span>
-                <Button variant="outline" onClick={signOut} className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    await signOut();
+                    navigate('/');
+                  }}
+                  className="flex items-center gap-2"
+                >
                   <LogOut className="h-4 w-4" /> Sign out
                 </Button>
               </>

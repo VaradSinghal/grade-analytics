@@ -99,7 +99,8 @@ export const Analytics = () => {
                 query = query.eq('students.batch', filters.batch);
               }
               if (filters.course && filters.course !== 'all') {
-                query = query.eq('courses.id', filters.course);
+                // Filter by base column to avoid join alias issues
+                query = query.eq('course_id', filters.course);
               }
       if (filters.registerNumber) {
         query = query.like('students.register_number', `%${filters.registerNumber}%`);
