@@ -1,6 +1,7 @@
-import { BarChart3, GraduationCap, BookOpen } from "lucide-react";
+import { BarChart3, GraduationCap, BookOpen, LogIn, LogOut, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
+import { useSupabaseAuth } from '@/hooks/use-supabase-auth';
 
 interface HeaderProps {
   currentView: 'upload' | 'analytics';
@@ -9,6 +10,7 @@ interface HeaderProps {
 
 export const Header = ({ currentView, onViewChange }: HeaderProps) => {
   const navigate = useNavigate();
+  const { userEmail, signInWithGoogle, signOut } = useSupabaseAuth();
   return (
     <header className="border-b bg-gradient-card shadow-soft">
       <div className="container mx-auto px-4 py-4">
@@ -23,7 +25,7 @@ export const Header = ({ currentView, onViewChange }: HeaderProps) => {
             </div>
           </div>
           
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
             <Button
               variant={currentView === 'upload' ? 'analytics' : 'professional'}
               onClick={() => onViewChange('upload')}
@@ -48,6 +50,20 @@ export const Header = ({ currentView, onViewChange }: HeaderProps) => {
               <BookOpen className="h-4 w-4" />
               Course Details
             </Button>
+            {userEmail ? (
+              <>
+                <span className="text-sm text-muted-foreground hidden md:inline-flex items-center gap-1">
+                  <User className="h-4 w-4" /> {userEmail}
+                </span>
+                <Button variant="outline" onClick={signOut} className="flex items-center gap-2">
+                  <LogOut className="h-4 w-4" /> Sign out
+                </Button>
+              </>
+            ) : (
+              <Button variant="outline" onClick={signInWithGoogle} className="flex items-center gap-2">
+                <LogIn className="h-4 w-4" /> Sign in
+              </Button>
+            )}
           </div>
         </div>
       </div>

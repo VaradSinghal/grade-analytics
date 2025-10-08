@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useToast } from '@/hooks/use-toast';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/integrations/supabase/client';
+import { useSupabaseAuth } from '@/hooks/use-supabase-auth';
 
 interface StudentRecord {
   'S.No': number;
@@ -29,71 +30,205 @@ export const FileUpload = () => {
   const [uploadStatus, setUploadStatus] = useState<string>('');
   const [progress, setProgress] = useState(0);
   const { toast } = useToast();
+  const { userEmail, signInWithGoogle } = useSupabaseAuth();
+
+  // Test database connection
+  const testConnection = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.from('courses').select('count').limit(1);
+      if (error) {
+        console.error('Database connection test failed:', error);
+        return false;
+      }
+      console.log('Database connection test successful');
+      return true;
+    } catch (error) {
+      console.error('Database connection test error:', error);
+      return false;
+    }
+  }, []);
 
   const processExcelData = useCallback(async (file: File) => {
     try {
       setUploading(true);
       setProgress(0);
+      setUploadStatus('Testing database connection...');
+
+      // Test database connection first
+      const isConnected = await testConnection();
+      if (!isConnected) {
+        throw new Error('Cannot connect to database. Please check your internet connection and try again.');
+      }
+
       setUploadStatus('Reading Excel file...');
+
+      // Validate file type
+      if (!file.name.match(/\.(xlsx|xls)$/i)) {
+        throw new Error('Please upload a valid Excel file (.xlsx or .xls)');
+      }
 
       const data = await file.arrayBuffer();
       setProgress(10);
       
-      const workbook = XLSX.read(data);
+      const workbook = XLSX.read(data, { cellDates: false, raw: true });
       const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet) as StudentRecord[];
 
-      if (jsonData.length === 0) {
+      // Auto-detect header row by scanning first 10 rows for required headers
+      const requiredHeaderHints = [
+        'S.No', 'Office Name', 'Register No', 'Student Name', 'Semester',
+        'Batch', 'Degree', 'Branch of Study', 'Graduation Type',
+        'Course Code', 'Course Title', 'Credits', 'Grade', 'Mode Of Attempt'
+      ].map(h => h.toLowerCase());
+
+      const range = XLSX.utils.decode_range(worksheet['!ref'] as string);
+      let headerRowIndex = range.s.r; // start row
+      const maxScan = Math.min(range.s.r + 10, range.e.r);
+      for (let r = range.s.r; r <= maxScan; r++) {
+        const rowValues: string[] = [];
+        for (let c = range.s.c; c <= range.e.c; c++) {
+          const cell = worksheet[XLSX.utils.encode_cell({ r, c })];
+          if (cell && typeof cell.v !== 'undefined') {
+            rowValues.push(String(cell.v).trim());
+          }
+        }
+        const normalized = rowValues.map(v => v.toLowerCase());
+        const score = requiredHeaderHints.filter(hint => normalized.includes(hint)).length;
+        if (score >= 6) { // heuristically enough headers found
+          headerRowIndex = r;
+          break;
+        }
+      }
+
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+        range: headerRowIndex,
+        header: 1,
+        defval: '',
+        blankrows: false,
+      }) as any[];
+
+      // Convert array-of-arrays into array-of-objects using detected header row
+      if (jsonData.length < 2) {
+        throw new Error('Could not detect data rows in the Excel file.');
+      }
+      const detectedHeaders = (jsonData[0] as string[]).map(h => String(h).trim());
+      const rows = jsonData.slice(1) as any[];
+      const records: StudentRecord[] = rows.map((row: any[]) => {
+        const obj: any = {};
+        detectedHeaders.forEach((key: string, idx: number) => {
+          obj[key] = row[idx];
+        });
+        return obj as StudentRecord;
+      });
+
+      console.log('Detected header row at index (0-based):', headerRowIndex);
+      console.log('Detected headers:', detectedHeaders);
+      console.log('Excel data loaded:', records.length, 'records');
+      console.log('Sample record:', records[0]);
+
+      if (records.length === 0) {
         throw new Error('Excel file is empty');
       }
 
       setProgress(20);
-      setUploadStatus(`Processing ${jsonData.length} records...`);
+      setUploadStatus(`Processing ${records.length} records...`);
+
+      // Validate required columns - normalize column names for comparison
+      const requiredColumns = [
+        'S.No', 'Office Name', 'Register No', 'Student Name', 'Semester', 
+        'Batch', 'Degree', 'Branch of Study', 'Graduation Type', 
+        'Course Code', 'Course Title', 'Credits', 'Grade', 'Mode Of Attempt'
+      ];
+      
+      const firstRecord = records[0];
+      const actualColumns = Object.keys(firstRecord);
+      
+      console.log('Actual columns in Excel:', actualColumns);
+      console.log('Required columns:', requiredColumns);
+      
+      // Check for missing columns (case-insensitive and trim whitespace)
+      const normalizedActualColumns = actualColumns.map(col => col.trim());
+      const missingColumns = requiredColumns.filter(requiredCol => 
+        !normalizedActualColumns.some(actualCol => 
+          actualCol.toLowerCase() === requiredCol.toLowerCase()
+        )
+      );
+      
+      if (missingColumns.length > 0) {
+        throw new Error(`Missing required columns: ${missingColumns.join(', ')}. Found columns: ${actualColumns.join(', ')}`);
+      }
 
       // Get unique course information from the data
-      const courseMap = new Map<string, { title: string; credits: number }>();
+      const courseMap = new Map<string, { title?: string; credits?: number }>();
       
-      jsonData.forEach(record => {
-        if (record['Course Code'] && record['Course Title'] && record['Credits']) {
-          courseMap.set(record['Course Code'], {
-            title: record['Course Title'],
-            credits: record['Credits']
-          });
+      // Create a mapping function to handle column name variations
+      const getColumnValue = (record: any, columnName: string) => {
+        const keys = Object.keys(record);
+        const matchingKey = keys.find(key => 
+          key.trim().toLowerCase() === columnName.toLowerCase()
+        );
+        return matchingKey ? record[matchingKey] : undefined;
+      };
+
+      const normalizeCourseCode = (code: any) => String(code ?? '')
+        .toUpperCase()
+        .replace(/\s+/g, '')
+        .replace(/[^A-Z0-9]/g, '');
+      const normalizeRegisterNumber = (reg: any) => String(reg ?? '').trim();
+
+      const allCourseCodesSet = new Set<string>();
+      records.forEach(record => {
+        const courseCode = normalizeCourseCode(getColumnValue(record, 'Course Code'));
+        if (!courseCode) return;
+        allCourseCodesSet.add(courseCode);
+        const courseTitle = getColumnValue(record, 'Course Title');
+        const credits = getColumnValue(record, 'Credits');
+        if (!courseMap.has(courseCode)) {
+          courseMap.set(courseCode, { title: courseTitle, credits });
+        } else {
+          // backfill missing fields if later rows have them
+          const existing = courseMap.get(courseCode)!;
+          if (!existing.title && courseTitle) existing.title = courseTitle;
+          if (existing.credits == null && credits != null) existing.credits = credits;
         }
       });
+
+      console.log('Course map created:', courseMap.size, 'unique courses');
 
       // Verify courses exist in database and insert new ones
       setProgress(30);
       setUploadStatus('Validating courses...');
       
-      const courseCodes = Array.from(courseMap.keys());
+      const allCourseCodes = Array.from(allCourseCodesSet);
+      console.log('Checking existing courses:', allCourseCodes);
+      
       const { data: existingCourses, error: coursesError } = await supabase
         .from('courses')
         .select('code')
-        .in('code', courseCodes);
+        .in('code', allCourseCodes);
 
       if (coursesError) {
+        console.error('Courses error:', coursesError);
         throw new Error(`Error checking courses: ${coursesError.message}`);
       }
 
-      const existingCourseCodes = new Set(existingCourses?.map(c => c.code) || []);
-      const newCourses = courseCodes.filter(code => !existingCourseCodes.has(code));
+      const existingCourseCodes = new Set((existingCourses || []).map(c => normalizeCourseCode(c.code)));
+      const newCourses = allCourseCodes.filter(code => !existingCourseCodes.has(normalizeCourseCode(code)));
 
-      // Insert new courses
+      // Insert new courses (use upsert to avoid unique constraint errors)
       if (newCourses.length > 0) {
         setUploadStatus(`Creating ${newCourses.length} new courses...`);
         const coursesToInsert = newCourses.map(code => {
-          const courseInfo = courseMap.get(code)!;
+          const courseInfo = courseMap.get(code) || {};
           return {
             code,
-            name: courseInfo.title,
-            credits: courseInfo.credits
+            name: courseInfo.title || code,
+            credits: courseInfo.credits ?? null
           };
         });
 
         const { error: insertCoursesError } = await supabase
           .from('courses')
-          .insert(coursesToInsert);
+          .upsert(coursesToInsert, { onConflict: 'code', ignoreDuplicates: true });
 
         if (insertCoursesError) {
           throw new Error(`Error inserting courses: ${insertCoursesError.message}`);
@@ -103,16 +238,16 @@ export const FileUpload = () => {
       setProgress(40);
       setUploadStatus('Processing student data...');
 
-      // Process students with new fields
-      const studentsToUpsert = jsonData.map(record => ({
-        register_number: record['Register No'],
-        name: record['Student Name'],
-        semester: record['Semester'],
-        batch: record['Batch'],
-        degree: record['Degree'],
-        office_name: record['Office Name'],
-        branch_of_study: record['Branch of Study'],
-        graduation_type: record['Graduation Type']
+      // Process students with new fields using flexible column mapping
+      const studentsToUpsert = records.map(record => ({
+        register_number: normalizeRegisterNumber(getColumnValue(record, 'Register No')),
+        name: getColumnValue(record, 'Student Name'),
+        semester: getColumnValue(record, 'Semester'),
+        batch: getColumnValue(record, 'Batch'),
+        degree: getColumnValue(record, 'Degree'),
+        office_name: getColumnValue(record, 'Office Name'),
+        branch_of_study: getColumnValue(record, 'Branch of Study'),
+        graduation_type: getColumnValue(record, 'Graduation Type')
       }));
 
       // Remove duplicates based on register_number
@@ -158,7 +293,7 @@ export const FileUpload = () => {
         }
 
         // Add to map
-        students?.forEach(s => studentIdMap.set(s.register_number, s.id));
+        students?.forEach(s => studentIdMap.set(normalizeRegisterNumber(s.register_number), s.id));
         
         // Update progress
         const batchProgress = 60 + (i / uniqueStudents.length) * 5;
@@ -170,16 +305,34 @@ export const FileUpload = () => {
       setProgress(65);
       setUploadStatus('Mapping course IDs...');
       
-      const { data: courses, error: getCoursesError } = await supabase
+      let { data: courses, error: getCoursesError } = await supabase
         .from('courses')
         .select('id, code')
-        .in('code', courseCodes);
+        .in('code', allCourseCodes);
 
       if (getCoursesError) {
         throw new Error(`Error getting courses: ${getCoursesError.message}`);
       }
+      console.log('Fetched courses count:', (courses || []).length);
+      let courseIdMap = new Map((courses || []).map(c => [normalizeCourseCode(c.code), c.id]));
 
-      const courseIdMap = new Map(courses?.map(c => [c.code, c.id]) || []);
+      // Fallback: if nothing fetched, force-create all codes and re-fetch
+      if (courseIdMap.size === 0 && allCourseCodes.length > 0) {
+        const fallbackInsert = allCourseCodes.map(code => ({ code, name: code, credits: null }));
+        const { error: fallbackErr } = await supabase
+          .from('courses')
+          .upsert(fallbackInsert, { onConflict: 'code', ignoreDuplicates: true });
+        if (fallbackErr) {
+          throw new Error(`Error ensuring courses: ${fallbackErr.message}`);
+        }
+        const refetch = await supabase
+          .from('courses')
+          .select('id, code')
+          .in('code', allCourseCodes);
+        courses = refetch.data || [];
+        courseIdMap = new Map((courses || []).map(c => [normalizeCourseCode(c.code), c.id]));
+        console.log('Refetched courses count:', (courses || []).length);
+      }
 
       // Process grades with mode of attempt
       setProgress(70);
@@ -187,32 +340,65 @@ export const FileUpload = () => {
       
       const gradesToUpsert: any[] = [];
       let processedCount = 0;
+      let missingStudentId = 0;
+      let missingCourseId = 0;
+      let missingOrEmptyGrade = 0;
 
-      jsonData.forEach((record, index) => {
+      const missingExamples: any[] = [];
+      records.forEach((record, index) => {
         // Update progress every 100 records
         if (index % 100 === 0) {
-          const gradeProgress = 70 + (index / jsonData.length) * 20;
+          const gradeProgress = 70 + (index / records.length) * 20;
           setProgress(gradeProgress);
-          setUploadStatus(`Processing grades... ${index}/${jsonData.length}`);
+          setUploadStatus(`Processing grades... ${index}/${records.length}`);
         }
-        const studentId = studentIdMap.get(record['Register No']);
-        const courseId = courseIdMap.get(record['Course Code']);
         
-        if (studentId && courseId && record['Grade']) {
-          const grade = record['Grade'].toString().trim();
-          if (grade !== '') {
+        const registerNo = normalizeRegisterNumber(getColumnValue(record, 'Register No'));
+        const courseCode = normalizeCourseCode(getColumnValue(record, 'Course Code'));
+        const grade = getColumnValue(record, 'Grade');
+        const modeOfAttempt = getColumnValue(record, 'Mode Of Attempt');
+        
+        const studentId = studentIdMap.get(registerNo);
+        const courseId = courseIdMap.get(courseCode);
+        
+        if (studentId && courseId && grade) {
+          const gradeStr = grade.toString().trim();
+          if (gradeStr !== '') {
             // Determine if student passed (not F, Ab, or similar failing grades)
-            const isPassed = !['F', 'AB', 'Ab', 'ab', 'WH', 'Wh', 'wh'].includes(grade.toUpperCase());
+            const isPassed = !['F', 'AB', 'Ab', 'ab', 'WH', 'Wh', 'wh'].includes(gradeStr.toUpperCase());
             
             gradesToUpsert.push({
               student_id: studentId,
               course_id: courseId,
-              grade: grade,
+              grade: gradeStr,
               is_passed: isPassed,
-              mode_of_attempt: record['Mode Of Attempt'] || 'Regular'
+              mode_of_attempt: modeOfAttempt || 'Regular'
             });
           }
+          else {
+            missingOrEmptyGrade++;
+          }
         }
+        else {
+          if (!studentId) missingStudentId++;
+          if (!courseId) {
+            if (missingExamples.length < 5) {
+              missingExamples.push({ raw: getColumnValue(record, 'Course Code'), normalized: courseCode });
+            }
+            missingCourseId++;
+          }
+          if (!grade) missingOrEmptyGrade++;
+        }
+      });
+
+      console.log('Grade processing diagnostics:', {
+        totalRows: records.length,
+        gradesPrepared: gradesToUpsert.length,
+        missingStudentId,
+        missingCourseId,
+        missingOrEmptyGrade,
+        sampleMissingCourseCodes: missingExamples,
+        availableCourseIdKeys: Array.from(courseIdMap.keys()).slice(0, 20)
       });
 
       // Upsert grades in batches to avoid timeouts
@@ -303,6 +489,12 @@ export const FileUpload = () => {
         </CardHeader>
         
         <CardContent className="space-y-6">
+          {!userEmail && (
+            <div className="bg-muted/50 rounded-lg p-4 text-center">
+              <p className="mb-3">Please sign in with your <span className="font-semibold">srmist.edu.in</span> account to upload data.</p>
+              <Button variant="analytics" onClick={signInWithGoogle} className="min-w-[200px]">Sign in with Google</Button>
+            </div>
+          )}
           <div
             className={`border-2 border-dashed rounded-lg p-8 text-center transition-all duration-300 ${
               uploading ? 'border-primary bg-primary/5' : 'border-muted-foreground/25 hover:border-primary hover:bg-primary/5'
@@ -349,11 +541,11 @@ export const FileUpload = () => {
                 <Button
                   variant="analytics"
                   size="lg"
-                  disabled={uploading}
+                  disabled={uploading || !userEmail}
                   onClick={() => document.getElementById('file-upload')?.click()}
                   className="min-w-[200px]"
                 >
-                  {uploading ? 'Processing...' : 'Select Excel File'}
+                  {userEmail ? (uploading ? 'Processing...' : 'Select Excel File') : 'Sign in to upload'}
                 </Button>
               </div>
             </div>

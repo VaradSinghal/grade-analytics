@@ -1,0 +1,6 @@
+S.No,Office Name,Register No,Student Name,Semester,Batch,Degree,Branch of Study,Graduation Type,Course Code,Course Title,Credits,Grade,Mode Of Attempt
+1,Main Campus,21CS001,John Doe,3,2021,B.Tech,Computer Science,Regular,21CSC101T,OBJECT ORIENTED DESIGN AND PROGRAMMING,3,A,Regular
+2,Main Campus,21CS002,Jane Smith,3,2021,B.Tech,Computer Science,Regular,21CSC101T,OBJECT ORIENTED DESIGN AND PROGRAMMING,3,B,Regular
+3,Main Campus,21CS003,Bob Johnson,3,2021,B.Tech,Computer Science,Regular,21CSC201J,DATA STRUCTURES AND ALGORITHMS,4,A,Regular
+4,Main Campus,21CS001,John Doe,3,2021,B.Tech,Computer Science,Regular,21CSC201J,DATA STRUCTURES AND ALGORITHMS,4,B,Regular
+5,Main Campus,21CS002,Jane Smith,3,2021,B.Tech,Computer Science,Regular,21CSC201J,DATA STRUCTURES AND ALGORITHMS,4,C,Regular
